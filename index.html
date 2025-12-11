@@ -13,10 +13,10 @@
     .wrap{max-width:1100px;margin:22px auto;padding:16px}
     .card{background:var(--card); border-radius:12px; padding:14px; box-shadow:0 6px 18px rgba(60,60,90,0.06);}
     form{display:flex; gap:8px; flex-wrap:wrap}
-    input, select, button{padding:8px 10px; border-radius:8px; border:1px solid #e5e7eb}
+    input, select, button, textarea{padding:8px 10px; border-radius:8px; border:1px solid #e5e7eb}
     input[type="text"], input[type="date"]{min-width:160px}
     table{width:100%; border-collapse:collapse; margin-top:12px}
-    th, td{padding:10px; text-align:left; border-bottom:1px solid #f0f0f3}
+    th, td{padding:10px; text-align:left; border-bottom:1px solid #f0f0f3; vertical-align:top}
     th{font-size:13px; color:var(--muted)}
     .badge{display:inline-block;padding:6px 8px;border-radius:999px;font-size:12px}
     .badge.missing{background:#fff3cd;color:#7a5316;border:1px solid #ffe8a8}
@@ -27,13 +27,19 @@
     .small{font-size:13px;padding:6px 8px}
     .right{margin-left:auto}
     .muted{color:var(--muted); font-size:13px}
-    @media (max-width:800px){table{font-size:13px} form{flex-direction:column}}
+    .history-row{background:#fbfbff;padding:10px;border-radius:8px;margin-top:6px;border:1px solid #f0eff8}
+    .history-item{font-size:13px;padding:6px 6px;border-bottom:1px dashed #eee}
+    .history-item:last-child{border-bottom:none}
+    .name-toggle{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+    .arrow{transition:transform .18s ease}
+    .arrow.open{transform:rotate(90deg)}
+    @media (max-width:800px){table{font-size:13px} form{flex-direction:column} td .actions{display:flex;gap:6px;flex-wrap:wrap}}
   </style>
 </head>
 <body>
   <header>
     <h1>Controle de Avaliações - Movom</h1>
-    <div class="muted">Salva localmente no navegador • Fácil de exportar/importar</div>
+    <div class="muted">Salva no Firebase Realtime DB • Backup local automático</div>
   </header>
 
   <main class="wrap">
@@ -81,8 +87,9 @@
             <th>Nome</th>
             <th>Telefone</th>
             <th>Última avaliação</th>
+            <th>Próx. Aval.</th>
             <th>Status</th>
-            <th style="width:220px">Ações</th>
+            <th style="width:320px">Ações</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -92,21 +99,58 @@
     </section>
   </main>
 
-  <script>
-    // Persistência no localStorage
-    const STORAGE_KEY = 'pilates_alunos_v1';
+  <!-- Firebase modular SDK via module script -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { getDatabase, ref, onValue, set, push, update, remove } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
 
+    // YOUR firebaseConfig - replace if needed
+    const firebaseConfig = {
+      apiKey: "AIzaSyDK8HjrQgN7lD13y56AyBhxdlw1cYMXSiA",
+      authDomain: "avaliamovom.firebaseapp.com",
+      projectId: "avaliamovom",
+      storageBucket: "avaliamovom.firebasestorage.app",
+      messagingSenderId: "375259802484",
+      appId: "1:375259802484:web:f63c6689059a7e90ce9a21",
+      databaseURL: "https://avaliamovom-default-rtdb.firebaseio.com"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const ROOT = 'students_v2';
+
+    // Local storage key fallback
+    const STORAGE_KEY = 'pilates_alunos_v2';
+
+    // DOM refs
     const studentForm = document.getElementById('studentForm');
     const studentsTableBody = document.querySelector('#studentsTable tbody');
     const searchEl = document.getElementById('search');
     const filterStatusEl = document.getElementById('filterStatus');
     const summaryEl = document.getElementById('summary');
+    const importFile = document.getElementById('importFile');
 
-    let students = load();
-    render();
+    // in-memory map
+    let students = {}; // keyed by id
+
+    // load local cache first
+    const localCache = loadLocal();
+    if(localCache && Object.keys(localCache).length) { students = localCache; render(); }
+
+    // realtime listener
+    const rootRef = ref(db, ROOT);
+    onValue(rootRef, snapshot => {
+      const val = snapshot.val();
+      if(val) { students = val; saveLocal(); } else { students = {}; saveLocal(); }
+      render();
+    }, err => {
+      console.warn('Realtime DB error:', err);
+      // keep local cache
+      render();
+    });
 
     // Form submit
-    studentForm.addEventListener('submit', (e) => {
+    studentForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const id = document.getElementById('studentId').value || cryptoRandomId();
       const name = document.getElementById('name').value.trim();
@@ -114,33 +158,60 @@
       const lastEval = document.getElementById('lastEval').value || null;
       const status = document.getElementById('status').value;
 
-      const entry = { id, name, phone, lastEval, status };
-      const existIndex = students.findIndex(s => s.id === id);
-      if (existIndex > -1) students[existIndex] = entry; else students.push(entry);
+      const entry = {
+        id,
+        name,
+        phone,
+        lastEval,
+        nextEval: computeNextEval(lastEval),
+        status,
+        history: (students[id] && students[id].history) ? students[id].history : {}
+      };
 
-      save();
-      resetForm();
-      render();
+      try {
+        await set(ref(db, `${ROOT}/${id}`), entry);
+        // realtime listener will update local state
+        resetForm();
+      } catch(err) {
+        alert('Erro ao salvar no Firebase: ' + err.message + '. Salvando localmente.');
+        students[id] = entry;
+        saveLocal();
+        render();
+        resetForm();
+      }
     });
 
     document.getElementById('clearBtn').addEventListener('click', resetForm);
-    document.getElementById('exportCsv').addEventListener('click', () => downloadCSV(students));
-    document.getElementById('exportJson').addEventListener('click', () => downloadJSON(students));
-    document.getElementById('importBtn').addEventListener('click', () => document.getElementById('importFile').click());
-    document.getElementById('importFile').addEventListener('change', handleImport);
-    document.getElementById('clearAll').addEventListener('click', () => { if(confirm('Apagar todos os registros? Esta ação não pode ser desfeita.')){ students = []; save(); render(); }});
+    document.getElementById('exportCsv').addEventListener('click', () => downloadCSV(Object.values(students)));
+    document.getElementById('exportJson').addEventListener('click', () => downloadJSON(Object.values(students)));
+    document.getElementById('importBtn').addEventListener('click', () => importFile.click());
+    importFile.addEventListener('change', handleImport);
+    document.getElementById('clearAll').addEventListener('click', async () => {
+      if(!confirm('Apagar todos os registros? Esta ação não pode ser desfeita.')) return;
+      try {
+        await remove(ref(db, ROOT));
+      } catch(err) {
+        alert('Erro ao apagar no Firebase: ' + err.message);
+      }
+    });
     document.getElementById('showDue').addEventListener('click', quickTriage);
-
     searchEl.addEventListener('input', render);
     filterStatusEl.addEventListener('change', render);
+
+    // Expose functions to window for onclick handlers (prevents ReferenceError)
+    window.editStudent = editStudent;
+    window.removeStudent = removeStudent;
+    window.markStatus = markStatus;
+    window.registerEval = registerEval;
+    window.toggleHistory = toggleHistory;
 
     // Helpers
     function cryptoRandomId(){ return 'id_' + Math.random().toString(36).slice(2,9); }
 
-    function load(){
-      try{ const txt = localStorage.getItem(STORAGE_KEY); return txt ? JSON.parse(txt) : sampleData(); } catch(e){ return [] }
+    function loadLocal(){
+      try{ const txt = localStorage.getItem(STORAGE_KEY); return txt ? JSON.parse(txt) : {}; } catch(e){ return {}; }
     }
-    function save(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(students)); }
+    function saveLocal(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(students)); }catch(e){/*ignore*/} }
 
     function resetForm(){ studentForm.reset(); document.getElementById('studentId').value = ''; }
 
@@ -148,91 +219,267 @@
       const q = searchEl.value.trim().toLowerCase();
       const filter = filterStatusEl.value;
       studentsTableBody.innerHTML = '';
-      const rows = students
-        .filter(s => (filter === 'all') || s.status === filter)
-        .filter(s => !q || s.name.toLowerCase().includes(q) || (s.phone || '').includes(q));
+      const rows = Object.values(students || {})
+        .filter(s => (filter === 'all') || (s && s.status === filter))
+        .filter(s => !q || (s.name && s.name.toLowerCase().includes(q)) || (s.phone || '').includes(q))
+        .sort((a,b) => (a.name||'').localeCompare(b.name||''));
 
       rows.forEach(s => {
         const tr = document.createElement('tr');
-        const lastEvalText = s.lastEval ? formatDate(s.lastEval) : '-';
+
+        const lastEvalText = s && s.lastEval ? formatDate(s.lastEval) : '-';
+        const nextEvalText = s && s.nextEval ? formatDate(s.nextEval) : '-';
+
+        // Name cell with toggle arrow
+        const nameCell = `<td>
+          <div class="name-toggle" onclick="toggleHistory('${s.id}', this)">
+            <span class="arrow" id="arrow_${s.id}">▶</span>
+            <strong>${escapeHtml(s.name || '')}</strong>
+          </div>
+        </td>`;
+
         tr.innerHTML = `
-          <td>${escapeHtml(s.name)}</td>
+          ${nameCell}
           <td>${escapeHtml(s.phone || '')}</td>
           <td>${lastEvalText}</td>
+          <td>${nextEvalText}</td>
           <td>${statusBadge(s.status)}</td>
           <td>
-            <button class="small ghost" onclick="editStudent('${s.id}')">Editar</button>
-            <button class="small" onclick="markStatus('${s.id}','ok')">Marcar OK</button>
-            <button class="small" onclick="markStatus('${s.id}','missing')">Marcar falta</button>
-            <button class="small" onclick="removeStudent('${s.id}')" style="background:#ff6b6b">Remover</button>
-          </td>`;
+            <div class="actions">
+              <button class="small ghost" onclick="editStudent('${s.id}')">Editar</button>
+              <button class="small" onclick="registerEval('${s.id}')">Registrar Avaliação</button>
+              <button class="small" onclick="markStatus('${s.id}','ok')">Marcar OK</button>
+              <button class="small" onclick="markStatus('${s.id}','missing')">Marcar falta</button>
+              <button class="small" onclick="removeStudent('${s.id}')" style="background:#ff6b6b">Remover</button>
+            </div>
+          </td>
+        `;
         studentsTableBody.appendChild(tr);
+
+        // history row (initially hidden)
+        const histTr = document.createElement('tr');
+        histTr.id = `histrow_${s.id}`;
+        histTr.style.display = 'none';
+        const histTd = document.createElement('td');
+        histTd.colSpan = 6;
+        histTd.innerHTML = buildHistoryHtml(s);
+        histTr.appendChild(histTd);
+        studentsTableBody.appendChild(histTr);
       });
 
-      const total = students.length;
-      const need = students.filter(s=>s.status==='missing').length;
-      summaryEl.textContent = `Total: ${total} • Precisa de avaliação/refazer: ${need}`;
+      const total = Object.keys(students || {}).length;
+      const need = Object.values(students || {}).filter(s=>s && s.status==='missing').length;
+      summaryEl.textContent = `Total exibido: ${rows.length} • Total geral: ${total} • Precisa de avaliação/refazer: ${need}`;
     }
 
-    // Exposed to window for button onclick
-    window.editStudent = function(id){
-      const s = students.find(x=>x.id===id); if(!s) return;
+    function buildHistoryHtml(student){
+      const history = student && student.history ? student.history : {};
+      const items = Object.keys(history).map(k => ({ id:k, ...history[k] }));
+      items.sort((a,b) => (b.createdAt||0) - (a.createdAt||0));
+      if(items.length === 0) return `<div class="history-row"><em>Sem histórico de avaliações</em></div>`;
+      let html = `<div class="history-row">`;
+      items.forEach(it => {
+        html += `<div class="history-item"><strong>${formatDate(it.date)}</strong> — Próx: ${formatDate(it.next)}${it.note?(' — '+escapeHtml(it.note)) : ''} <button class="small ghost" style="margin-left:10px" onclick="removeHistoryItem('${student.id}','${it.id}')">Remover</button></div>`;
+      });
+      html += `</div>`;
+      return html;
+    }
+
+    // Exposed actions
+    function editStudent(id){
+      const s = students[id]; if(!s) return;
       document.getElementById('studentId').value = s.id;
-      document.getElementById('name').value = s.name;
+      document.getElementById('name').value = s.name || '';
       document.getElementById('phone').value = s.phone || '';
       document.getElementById('lastEval').value = s.lastEval || '';
       document.getElementById('status').value = s.status || 'missing';
       window.scrollTo({top:0,behavior:'smooth'});
     }
 
-    window.removeStudent = function(id){ if(!confirm('Remover este aluno?')) return; students = students.filter(s=>s.id!==id); save(); render(); }
+    async function removeStudent(id){
+      if(!confirm('Remover este aluno?')) return;
+      try {
+        await remove(ref(db, `${ROOT}/${id}`));
+      } catch(err) {
+        alert('Erro ao remover no Firebase: ' + err.message);
+      }
+    }
 
-    window.markStatus = function(id, st){ const s = students.find(x=>x.id===id); if(!s) return; s.status = st; if(st==='ok') s.lastEval = new Date().toISOString().slice(0,10); save(); render(); }
+    async function markStatus(id, st){
+      const s = students[id]; if(!s) return;
+      s.status = st;
+      if(st === 'ok'){
+        const today = new Date().toISOString().slice(0,10);
+        s.lastEval = today;
+        s.nextEval = computeNextEval(today);
+        // add history entry
+        const entry = { date: today, next: s.nextEval, note: 'Marcado OK manualmente', createdAt: Date.now() };
+        try {
+          const key = push(ref(db, `${ROOT}/${id}/history`)).key;
+          const updates = {};
+          updates[`${ROOT}/${id}/history/${key}`] = entry;
+          updates[`${ROOT}/${id}/lastEval`] = s.lastEval;
+          updates[`${ROOT}/${id}/nextEval`] = s.nextEval;
+          updates[`${ROOT}/${id}/status`] = s.status;
+          await update(ref(db), updates);
+        } catch(err){
+          alert('Erro ao atualizar no Firebase: ' + err.message);
+        }
+      } else {
+        try {
+          await update(ref(db, `${ROOT}/${id}`), { status: st });
+        } catch(err){
+          alert('Erro ao atualizar status no Firebase: ' + err.message);
+        }
+      }
+    }
 
+    // register evaluation (prompts for optional note)
+    async function registerEval(id){
+      const note = prompt('Observação para esta avaliação (opcional):', '');
+      if(note === null) return;
+      const today = new Date().toISOString().slice(0,10);
+      const next = computeNextEval(today);
+      const entry = { date: today, next, note: note || '', createdAt: Date.now() };
+      try {
+        const key = push(ref(db, `${ROOT}/${id}/history`)).key;
+        const updates = {};
+        updates[`${ROOT}/${id}/history/${key}`] = entry;
+        updates[`${ROOT}/${id}/lastEval`] = today;
+        updates[`${ROOT}/${id}/nextEval`] = next;
+        updates[`${ROOT}/${id}/status`] = 'ok';
+        await update(ref(db), updates);
+        alert('Avaliação registrada.');
+      } catch(err) {
+        alert('Erro ao registrar no Firebase: ' + err.message);
+      }
+    }
+
+    async function removeHistoryItem(studentId, entryId){
+      if(!confirm('Remover este registro do histórico?')) return;
+      try {
+        await remove(ref(db, `${ROOT}/${studentId}/history/${entryId}`));
+      } catch(err) {
+        alert('Erro ao remover histórico no Firebase: ' + err.message);
+      }
+    }
+
+    // Toggle history row visibility
+    function toggleHistory(id, el){
+      const row = document.getElementById(`histrow_${id}`);
+      const arrow = document.getElementById(`arrow_${id}`);
+      if(!row) return;
+      if(row.style.display === 'none' || row.style.display === '') {
+        row.style.display = 'table-row';
+        if(arrow) { arrow.classList.add('open'); arrow.textContent = '▼'; }
+      } else {
+        row.style.display = 'none';
+        if(arrow) { arrow.classList.remove('open'); arrow.textContent = '▶'; }
+      }
+    }
+
+    // Status badge
     function statusBadge(st){ if(st==='ok') return `<span class="badge ok">OK</span>`; return `<span class="badge missing">Precisa</span>` }
 
-    function formatDate(d){ // d is YYYY-MM-DD
-      const [y,m,day] = d.split('-'); return `${day}/${m}/${y}` }
+    // format YYYY-MM-DD -> DD/MM/YYYY
+    function formatDate(d){ if(!d) return '-'; const [y,m,day] = d.split('-'); return `${day}/${m}/${y}` }
 
-    function escapeHtml(t){ return (t||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }
+    function escapeHtml(t){ return (t||'').toString().replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }
 
-    function downloadCSV(arr){ if(!arr.length){ alert('Nenhum registro para exportar'); return; }
-      const headers = ['Nome','Telefone','ÚltimaAvaliação','Status'];
-      const lines = [headers.join(',')].concat(arr.map(s => [csvSafe(s.name), csvSafe(s.phone), s.lastEval||'', s.status].join(',')));
+    // compute next eval: add exactly 3 months (adjust for month lengths)
+    function computeNextEval(d){ // d is YYYY-MM-DD or null
+      if(!d) return null;
+      const [y,m,day] = d.split('-').map(Number);
+      const dt = new Date(y, m-1, day);
+      const originalDay = dt.getDate();
+      dt.setMonth(dt.getMonth() + 3);
+      // if month rolled over (e.g., from 31 to shorter month), set to last day of prev month
+      if(dt.getDate() !== originalDay) dt.setDate(0);
+      const yy = dt.getFullYear();
+      const mm = String(dt.getMonth()+1).padStart(2,'0');
+      const dd = String(dt.getDate()).padStart(2,'0');
+      return `${yy}-${mm}-${dd}`;
+    }
+
+    // CSV / JSON helpers
+    function downloadCSV(arr){ if(!arr || arr.length===0){ alert('Nenhum registro para exportar'); return; }
+      const headers = ['Nome','Telefone','ÚltimaAvaliação','PróximaAvaliação','Status'];
+      const lines = [headers.join(',')].concat(arr.map(s => [csvSafe(s.name), csvSafe(s.phone), s.lastEval||'', s.nextEval||'', s.status||''].join(',')));
       const blob = new Blob([lines.join('\n')], {type:'text/csv;charset=utf-8;'});
       const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'alunos_pilates.csv'; a.click(); URL.revokeObjectURL(url);
     }
     function csvSafe(t){ if(t==null) return ''; return '"' + (''+t).replaceAll('"','""') + '"'; }
-
     function downloadJSON(arr){ const blob = new Blob([JSON.stringify(arr, null, 2)], {type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'alunos_pilates.json'; a.click(); URL.revokeObjectURL(url); }
 
-    function handleImport(e){ const f = e.target.files[0]; if(!f) return; const reader = new FileReader(); reader.onload = () => { try{ const data = JSON.parse(reader.result); if(!Array.isArray(data)){ alert('Arquivo inválido'); return; } if(confirm('Importar e substituir os registros atuais? OK para substituir, Cancel para mesclar')){ students = data; } else { // merge without duplicates by phone+name
-          data.forEach(d => { if(!students.some(s=>s.id===d.id || (s.name===d.name && s.phone===d.phone))){ students.push(d); } }); }
-          save(); render(); alert('Importação concluída'); }catch(err){ alert('Erro ao ler o arquivo: ' + err.message) } };
-      reader.readAsText(f);
+    // handle import (array or object)
+    function handleImport(e){ const f = e.target.files[0]; if(!f) return; const reader = new FileReader(); reader.onload = async () => {
+      try{
+        const data = JSON.parse(reader.result);
+        if(Array.isArray(data)){
+          if(!confirm('Importar e substituir os registros atuais? OK para substituir, Cancel para mesclar')) {
+            // merge
+            for(const s of data){
+              if(!s.id) s.id = cryptoRandomId();
+              await set(ref(db, `${ROOT}/${s.id}`), s);
+            }
+            alert('Importação (mescla) concluída');
+          } else {
+            // replace: build object keyed by id
+            const obj = {};
+            data.forEach(s => { if(!s.id) s.id = cryptoRandomId(); obj[s.id] = s; });
+            await set(ref(db, ROOT), obj);
+            alert('Importação (substituição) concluída');
+          }
+        } else if(typeof data === 'object'){
+          if(confirm('Importar e substituir os registros atuais? OK para substituir, Cancel para mesclar')){
+            await set(ref(db, ROOT), data);
+            alert('Importação (substituição) concluída');
+          } else {
+            for(const k of Object.keys(data)){
+              await set(ref(db, `${ROOT}/${k}`), data[k]);
+            }
+            alert('Importação (mescla) concluída');
+          }
+        } else alert('Formato inválido');
+      }catch(err){ alert('Erro ao ler o arquivo: ' + err.message); }
       e.target.value = '';
-    }
+    }; reader.readAsText(f); }
 
-    function quickTriage(){ // sugere marcar alunos com avaliação há mais de 1 ano como 'missing'
-      const now = new Date(); let changed = 0;
-      students.forEach(s => {
-        if(!s.lastEval){ if(s.status!=='missing'){ s.status='missing'; changed++ }}
-        else {
-          const dt = new Date(s.lastEval+'T00:00:00');
-          const diffY = (now - dt) / (1000*60*60*24*365);
-          if(diffY >= 1 && s.status !== 'missing'){ s.status='missing'; changed++; }
+    // triage: mark missing if nextEval passed or no eval
+    function quickTriage(){
+      const now = new Date();
+      const updates = {};
+      let changed = 0;
+      Object.values(students).forEach(s => {
+        const next = s && s.nextEval ? new Date(s.nextEval+'T00:00:00') : null;
+        if(!s.lastEval || (next && next < now)){
+          if(s.status !== 'missing'){ updates[`${ROOT}/${s.id}/status`] = 'missing'; changed++; }
         }
       });
-      if(changed) { save(); render(); alert(`${changed} aluno(s) marcados como 'Precisa' pela triagem rápida`); } else alert('Nenhuma alteração feita pela triagem');
+      if(changed === 0) { alert('Nenhuma alteração feita pela triagem'); return; }
+      update(ref(db), updates).then(()=> alert(`${changed} aluno(s) marcados como 'Precisa' pela triagem rápida`)).catch(err => alert('Erro ao aplicar triagem: ' + err.message));
     }
 
-    // Sample data to start
-    function sampleData(){ return [
-      { id: 'a1', name: 'Ana Monteiro', phone: '21987654321', lastEval: '2024-11-10', status: 'missing' },
-      { id: 'b2', name: 'Carlos Silva', phone: '21999887766', lastEval: '2025-07-02', status: 'ok' },
-      { id: 'c3', name: 'Beatriz Almeida', phone: '', lastEval: null, status: 'missing' }
-    ]; }
+    // expose internals for console debugging
+    window._students = students;
+    window._db = db;
 
+    // seed sample if DB empty and no local
+    (async function seedIfEmpty(){
+      try {
+        // if both empty, seed
+        if(!Object.keys(students || {}).length){
+          const sample = {
+            a1: { id:'a1', name:'Ana Monteiro', phone:'21987654321', lastEval:'2024-11-10', nextEval: computeNextEval('2024-11-10'), status:'missing', history:{} },
+            b2: { id:'b2', name:'Carlos Silva', phone:'21999887766', lastEval:'2025-07-02', nextEval: computeNextEval('2025-07-02'), status:'ok', history:{} }
+          };
+          await set(ref(db, ROOT), sample);
+        }
+      } catch(e){ console.warn('seed failed', e); }
+    })();
+
+    // ensure local saved on unload
+    window.addEventListener('beforeunload', () => saveLocal());
   </script>
 </body>
 </html>
