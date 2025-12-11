@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Controle de Avaliações - Movom</title>
+  <style>
+    :root{--bg:#f3e9ff;--card:#ffffff;--accent:#8a4fff;--muted:#6b6b83}
+    *{box-sizing:border-box}
+    body{font-family:Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin:0; background:var(--bg); color:#222}
+    header{background:linear-gradient(90deg,#fff 0%,#d8f7ff 100%); padding:18px 24px; display:flex; gap:16px; align-items:center; justify-content:space-between}
+    header h1{margin:0; font-size:18px}
+    .wrap{max-width:1100px;margin:22px auto;padding:16px}
+    .card{background:var(--card); border-radius:12px; padding:14px; box-shadow:0 6px 18px rgba(60,60,90,0.06);}
+    form{display:flex; gap:8px; flex-wrap:wrap}
+    input, select, button{padding:8px 10px; border-radius:8px; border:1px solid #e5e7eb}
+    input[type="text"], input[type="date"]{min-width:160px}
+    table{width:100%; border-collapse:collapse; margin-top:12px}
+    th, td{padding:10px; text-align:left; border-bottom:1px solid #f0f0f3}
+    th{font-size:13px; color:var(--muted)}
+    .badge{display:inline-block;padding:6px 8px;border-radius:999px;font-size:12px}
+    .badge.missing{background:#fff3cd;color:#7a5316;border:1px solid #ffe8a8}
+    .badge.ok{background:#e6ffed;color:#155724;border:1px solid #baf2c6}
+    .btn{cursor:pointer;background:var(--accent); color:white; border:none}
+    .btn.ghost{background:transparent;color:var(--accent);border:1px solid rgba(108,92,231,0.14)}
+    .controls{display:flex; gap:8px; align-items:center}
+    .small{font-size:13px;padding:6px 8px}
+    .right{margin-left:auto}
+    .muted{color:var(--muted); font-size:13px}
+    @media (max-width:800px){table{font-size:13px} form{flex-direction:column}}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Controle de Avaliações - Movom</h1>
+    <div class="muted">Salva localmente no navegador • Fácil de exportar/importar</div>
+  </header>
+
+  <main class="wrap">
+    <section class="card">
+      <h2 style="margin-top:0">Adicionar / Atualizar aluno</h2>
+      <form id="studentForm">
+        <input type="hidden" id="studentId">
+        <input id="name" type="text" placeholder="Nome do aluno" required>
+        <input id="phone" type="text" placeholder="Telefone">
+        <input id="lastEval" type="date" title="Data da última avaliação">
+        <select id="status">
+          <option value="missing">Precisa fazer/refazer avaliação</option>
+          <option value="ok">Avaliação em dia</option>
+        </select>
+        <button class="btn" type="submit">Salvar</button>
+        <button type="button" class="ghost small" id="clearBtn">Limpar</button>
+      </form>
+    </section>
+
+    <section style="height:12px"></section>
+
+    <section class="card">
+      <div style="display:flex;align-items:center">
+        <div style="display:flex; gap:8px; flex-wrap:wrap">
+          <input id="search" type="text" placeholder="Pesquisar por nome ou telefone" style="min-width:260px">
+          <select id="filterStatus">
+            <option value="all">Mostrar todos</option>
+            <option value="missing">Precisa avaliação</option>
+            <option value="ok">Avaliação em dia</option>
+          </select>
+          <button id="showDue" class="small">Fazer triagem rápida</button>
+        </div>
+        <div class="right controls">
+          <button id="exportCsv" class="small">Exportar CSV</button>
+          <button id="exportJson" class="small">Exportar JSON</button>
+          <input id="importFile" type="file" accept="application/json" style="display:none">
+          <button id="importBtn" class="small ghost">Importar JSON</button>
+          <button id="clearAll" class="small" style="background:#ff6b6b">Apagar tudo</button>
+        </div>
+      </div>
+
+      <table id="studentsTable" aria-label="Lista de alunos">
+        <thead>
+          <tr>
+            <th>Nome</th>
+            <th>Telefone</th>
+            <th>Última avaliação</th>
+            <th>Status</th>
+            <th style="width:220px">Ações</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <div id="summary" class="muted" style="margin-top:10px"></div>
+    </section>
+  </main>
+
+  <script>
+    // Persistência no localStorage
+    const STORAGE_KEY = 'pilates_alunos_v1';
+
+    const studentForm = document.getElementById('studentForm');
+    const studentsTableBody = document.querySelector('#studentsTable tbody');
+    const searchEl = document.getElementById('search');
+    const filterStatusEl = document.getElementById('filterStatus');
+    const summaryEl = document.getElementById('summary');
+
+    let students = load();
+    render();
+
+    // Form submit
+    studentForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const id = document.getElementById('studentId').value || cryptoRandomId();
+      const name = document.getElementById('name').value.trim();
+      const phone = document.getElementById('phone').value.trim();
+      const lastEval = document.getElementById('lastEval').value || null;
+      const status = document.getElementById('status').value;
+
+      const entry = { id, name, phone, lastEval, status };
+      const existIndex = students.findIndex(s => s.id === id);
+      if (existIndex > -1) students[existIndex] = entry; else students.push(entry);
+
+      save();
+      resetForm();
+      render();
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', resetForm);
+    document.getElementById('exportCsv').addEventListener('click', () => downloadCSV(students));
+    document.getElementById('exportJson').addEventListener('click', () => downloadJSON(students));
+    document.getElementById('importBtn').addEventListener('click', () => document.getElementById('importFile').click());
+    document.getElementById('importFile').addEventListener('change', handleImport);
+    document.getElementById('clearAll').addEventListener('click', () => { if(confirm('Apagar todos os registros? Esta ação não pode ser desfeita.')){ students = []; save(); render(); }});
+    document.getElementById('showDue').addEventListener('click', quickTriage);
+
+    searchEl.addEventListener('input', render);
+    filterStatusEl.addEventListener('change', render);
+
+    // Helpers
+    function cryptoRandomId(){ return 'id_' + Math.random().toString(36).slice(2,9); }
+
+    function load(){
+      try{ const txt = localStorage.getItem(STORAGE_KEY); return txt ? JSON.parse(txt) : sampleData(); } catch(e){ return [] }
+    }
+    function save(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(students)); }
+
+    function resetForm(){ studentForm.reset(); document.getElementById('studentId').value = ''; }
+
+    function render(){
+      const q = searchEl.value.trim().toLowerCase();
+      const filter = filterStatusEl.value;
+      studentsTableBody.innerHTML = '';
+      const rows = students
+        .filter(s => (filter === 'all') || s.status === filter)
+        .filter(s => !q || s.name.toLowerCase().includes(q) || (s.phone || '').includes(q));
+
+      rows.forEach(s => {
+        const tr = document.createElement('tr');
+        const lastEvalText = s.lastEval ? formatDate(s.lastEval) : '-';
+        tr.innerHTML = `
+          <td>${escapeHtml(s.name)}</td>
+          <td>${escapeHtml(s.phone || '')}</td>
+          <td>${lastEvalText}</td>
+          <td>${statusBadge(s.status)}</td>
+          <td>
+            <button class="small ghost" onclick="editStudent('${s.id}')">Editar</button>
+            <button class="small" onclick="markStatus('${s.id}','ok')">Marcar OK</button>
+            <button class="small" onclick="markStatus('${s.id}','missing')">Marcar falta</button>
+            <button class="small" onclick="removeStudent('${s.id}')" style="background:#ff6b6b">Remover</button>
+          </td>`;
+        studentsTableBody.appendChild(tr);
+      });
+
+      const total = students.length;
+      const need = students.filter(s=>s.status==='missing').length;
+      summaryEl.textContent = `Total: ${total} • Precisa de avaliação/refazer: ${need}`;
+    }
+
+    // Exposed to window for button onclick
+    window.editStudent = function(id){
+      const s = students.find(x=>x.id===id); if(!s) return;
+      document.getElementById('studentId').value = s.id;
+      document.getElementById('name').value = s.name;
+      document.getElementById('phone').value = s.phone || '';
+      document.getElementById('lastEval').value = s.lastEval || '';
+      document.getElementById('status').value = s.status || 'missing';
+      window.scrollTo({top:0,behavior:'smooth'});
+    }
+
+    window.removeStudent = function(id){ if(!confirm('Remover este aluno?')) return; students = students.filter(s=>s.id!==id); save(); render(); }
+
+    window.markStatus = function(id, st){ const s = students.find(x=>x.id===id); if(!s) return; s.status = st; if(st==='ok') s.lastEval = new Date().toISOString().slice(0,10); save(); render(); }
+
+    function statusBadge(st){ if(st==='ok') return `<span class="badge ok">OK</span>`; return `<span class="badge missing">Precisa</span>` }
+
+    function formatDate(d){ // d is YYYY-MM-DD
+      const [y,m,day] = d.split('-'); return `${day}/${m}/${y}` }
+
+    function escapeHtml(t){ return (t||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }
+
+    function downloadCSV(arr){ if(!arr.length){ alert('Nenhum registro para exportar'); return; }
+      const headers = ['Nome','Telefone','ÚltimaAvaliação','Status'];
+      const lines = [headers.join(',')].concat(arr.map(s => [csvSafe(s.name), csvSafe(s.phone), s.lastEval||'', s.status].join(',')));
+      const blob = new Blob([lines.join('\n')], {type:'text/csv;charset=utf-8;'});
+      const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'alunos_pilates.csv'; a.click(); URL.revokeObjectURL(url);
+    }
+    function csvSafe(t){ if(t==null) return ''; return '"' + (''+t).replaceAll('"','""') + '"'; }
+
+    function downloadJSON(arr){ const blob = new Blob([JSON.stringify(arr, null, 2)], {type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'alunos_pilates.json'; a.click(); URL.revokeObjectURL(url); }
+
+    function handleImport(e){ const f = e.target.files[0]; if(!f) return; const reader = new FileReader(); reader.onload = () => { try{ const data = JSON.parse(reader.result); if(!Array.isArray(data)){ alert('Arquivo inválido'); return; } if(confirm('Importar e substituir os registros atuais? OK para substituir, Cancel para mesclar')){ students = data; } else { // merge without duplicates by phone+name
+          data.forEach(d => { if(!students.some(s=>s.id===d.id || (s.name===d.name && s.phone===d.phone))){ students.push(d); } }); }
+          save(); render(); alert('Importação concluída'); }catch(err){ alert('Erro ao ler o arquivo: ' + err.message) } };
+      reader.readAsText(f);
+      e.target.value = '';
+    }
+
+    function quickTriage(){ // sugere marcar alunos com avaliação há mais de 1 ano como 'missing'
+      const now = new Date(); let changed = 0;
+      students.forEach(s => {
+        if(!s.lastEval){ if(s.status!=='missing'){ s.status='missing'; changed++ }}
+        else {
+          const dt = new Date(s.lastEval+'T00:00:00');
+          const diffY = (now - dt) / (1000*60*60*24*365);
+          if(diffY >= 1 && s.status !== 'missing'){ s.status='missing'; changed++; }
+        }
+      });
+      if(changed) { save(); render(); alert(`${changed} aluno(s) marcados como 'Precisa' pela triagem rápida`); } else alert('Nenhuma alteração feita pela triagem');
+    }
+
+    // Sample data to start
+    function sampleData(){ return [
+      { id: 'a1', name: 'Ana Monteiro', phone: '21987654321', lastEval: '2024-11-10', status: 'missing' },
+      { id: 'b2', name: 'Carlos Silva', phone: '21999887766', lastEval: '2025-07-02', status: 'ok' },
+      { id: 'c3', name: 'Beatriz Almeida', phone: '', lastEval: null, status: 'missing' }
+    ]; }
+
+  </script>
+</body>
+</html>
