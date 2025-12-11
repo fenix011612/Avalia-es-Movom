@@ -39,7 +39,7 @@
 <body>
   <header>
     <h1>Controle de Avaliações - Movom</h1>
-    <div class="muted">Salva no Firebase Realtime DB • Backup local automático</div>
+    <div class="muted">Salva no Firebase Realtime DB • Atualização em tempo real</div>
   </header>
 
   <main class="wrap">
@@ -99,12 +99,12 @@
     </section>
   </main>
 
-  <!-- Firebase modular SDK via module script -->
+  <!-- Firebase modular SDK -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
-    import { getDatabase, ref, onValue, set, push, update, remove } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
+    import { getDatabase, ref, onValue, set, push, update, remove, get } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
 
-    // YOUR firebaseConfig - replace if needed
+    // seu firebaseConfig (substitua se quiser outro projeto)
     const firebaseConfig = {
       apiKey: "AIzaSyDK8HjrQgN7lD13y56AyBhxdlw1cYMXSiA",
       authDomain: "avaliamovom.firebaseapp.com",
@@ -117,10 +117,7 @@
 
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
-    const ROOT = 'students_v2';
-
-    // Local storage key fallback
-    const STORAGE_KEY = 'pilates_alunos_v2';
+    const ROOT = 'alunos_movom_v1'; // nó root no Realtime DB
 
     // DOM refs
     const studentForm = document.getElementById('studentForm');
@@ -130,33 +127,29 @@
     const summaryEl = document.getElementById('summary');
     const importFile = document.getElementById('importFile');
 
-    // in-memory map
-    let students = {}; // keyed by id
+    // In-memory store (keyed by id)
+    let students = {};
 
-    // load local cache first
-    const localCache = loadLocal();
-    if(localCache && Object.keys(localCache).length) { students = localCache; render(); }
-
-    // realtime listener
+    // Realtime listener: atualiza `students` sempre que DB mudar
     const rootRef = ref(db, ROOT);
     onValue(rootRef, snapshot => {
       const val = snapshot.val();
-      if(val) { students = val; saveLocal(); } else { students = {}; saveLocal(); }
+      students = val || {};
       render();
     }, err => {
-      console.warn('Realtime DB error:', err);
-      // keep local cache
+      console.warn('Erro no listener do Realtime DB:', err);
+      // mantém estado atual; render garante mostrar mesmo se offline
       render();
     });
 
-    // Form submit
+    // Form submit -> cria/atualiza no Firebase
     studentForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const id = document.getElementById('studentId').value || cryptoRandomId();
       const name = document.getElementById('name').value.trim();
       const phone = document.getElementById('phone').value.trim();
       const lastEval = document.getElementById('lastEval').value || null;
-      const status = document.getElementById('status').value;
+      const status = document.getElementById('status').value || 'missing';
 
       const entry = {
         id,
@@ -170,14 +163,9 @@
 
       try {
         await set(ref(db, `${ROOT}/${id}`), entry);
-        // realtime listener will update local state
         resetForm();
-      } catch(err) {
-        alert('Erro ao salvar no Firebase: ' + err.message + '. Salvando localmente.');
-        students[id] = entry;
-        saveLocal();
-        render();
-        resetForm();
+      } catch(err){
+        alert('Erro ao salvar no Firebase: ' + (err.message||err));
       }
     });
 
@@ -198,20 +186,16 @@
     searchEl.addEventListener('input', render);
     filterStatusEl.addEventListener('change', render);
 
-    // Expose functions to window for onclick handlers (prevents ReferenceError)
+    // Expor funções globalmente (evita ReferenceError quando onclick usa string)
     window.editStudent = editStudent;
     window.removeStudent = removeStudent;
     window.markStatus = markStatus;
     window.registerEval = registerEval;
     window.toggleHistory = toggleHistory;
+    window.removeHistoryItem = removeHistoryItem;
 
     // Helpers
     function cryptoRandomId(){ return 'id_' + Math.random().toString(36).slice(2,9); }
-
-    function loadLocal(){
-      try{ const txt = localStorage.getItem(STORAGE_KEY); return txt ? JSON.parse(txt) : {}; } catch(e){ return {}; }
-    }
-    function saveLocal(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(students)); }catch(e){/*ignore*/} }
 
     function resetForm(){ studentForm.reset(); document.getElementById('studentId').value = ''; }
 
@@ -219,6 +203,7 @@
       const q = searchEl.value.trim().toLowerCase();
       const filter = filterStatusEl.value;
       studentsTableBody.innerHTML = '';
+
       const rows = Object.values(students || {})
         .filter(s => (filter === 'all') || (s && s.status === filter))
         .filter(s => !q || (s.name && s.name.toLowerCase().includes(q)) || (s.phone || '').includes(q))
@@ -230,7 +215,6 @@
         const lastEvalText = s && s.lastEval ? formatDate(s.lastEval) : '-';
         const nextEvalText = s && s.nextEval ? formatDate(s.nextEval) : '-';
 
-        // Name cell with toggle arrow
         const nameCell = `<td>
           <div class="name-toggle" onclick="toggleHistory('${s.id}', this)">
             <span class="arrow" id="arrow_${s.id}">▶</span>
@@ -256,7 +240,7 @@
         `;
         studentsTableBody.appendChild(tr);
 
-        // history row (initially hidden)
+        // history row hidden by default
         const histTr = document.createElement('tr');
         histTr.id = `histrow_${s.id}`;
         histTr.style.display = 'none';
@@ -285,7 +269,7 @@
       return html;
     }
 
-    // Exposed actions
+    // actions
     function editStudent(id){
       const s = students[id]; if(!s) return;
       document.getElementById('studentId').value = s.id;
@@ -300,41 +284,29 @@
       if(!confirm('Remover este aluno?')) return;
       try {
         await remove(ref(db, `${ROOT}/${id}`));
-      } catch(err) {
-        alert('Erro ao remover no Firebase: ' + err.message);
-      }
+      } catch(err) { alert('Erro ao remover: ' + err.message); }
     }
 
     async function markStatus(id, st){
       const s = students[id]; if(!s) return;
-      s.status = st;
       if(st === 'ok'){
         const today = new Date().toISOString().slice(0,10);
-        s.lastEval = today;
-        s.nextEval = computeNextEval(today);
-        // add history entry
-        const entry = { date: today, next: s.nextEval, note: 'Marcado OK manualmente', createdAt: Date.now() };
+        const next = computeNextEval(today);
+        const entry = { date: today, next, note: 'Marcado OK manualmente', createdAt: Date.now() };
         try {
           const key = push(ref(db, `${ROOT}/${id}/history`)).key;
           const updates = {};
           updates[`${ROOT}/${id}/history/${key}`] = entry;
-          updates[`${ROOT}/${id}/lastEval`] = s.lastEval;
-          updates[`${ROOT}/${id}/nextEval`] = s.nextEval;
-          updates[`${ROOT}/${id}/status`] = s.status;
+          updates[`${ROOT}/${id}/lastEval`] = today;
+          updates[`${ROOT}/${id}/nextEval`] = next;
+          updates[`${ROOT}/${id}/status`] = 'ok';
           await update(ref(db), updates);
-        } catch(err){
-          alert('Erro ao atualizar no Firebase: ' + err.message);
-        }
+        } catch(err){ alert('Erro ao atualizar status: ' + err.message); }
       } else {
-        try {
-          await update(ref(db, `${ROOT}/${id}`), { status: st });
-        } catch(err){
-          alert('Erro ao atualizar status no Firebase: ' + err.message);
-        }
+        try { await update(ref(db, `${ROOT}/${id}`), { status: st }); } catch(err){ alert('Erro ao atualizar status: ' + err.message); }
       }
     }
 
-    // register evaluation (prompts for optional note)
     async function registerEval(id){
       const note = prompt('Observação para esta avaliação (opcional):', '');
       if(note === null) return;
@@ -350,58 +322,49 @@
         updates[`${ROOT}/${id}/status`] = 'ok';
         await update(ref(db), updates);
         alert('Avaliação registrada.');
-      } catch(err) {
-        alert('Erro ao registrar no Firebase: ' + err.message);
-      }
+      } catch(err){ alert('Erro ao registrar avaliação: ' + err.message); }
     }
 
     async function removeHistoryItem(studentId, entryId){
       if(!confirm('Remover este registro do histórico?')) return;
       try {
         await remove(ref(db, `${ROOT}/${studentId}/history/${entryId}`));
-      } catch(err) {
-        alert('Erro ao remover histórico no Firebase: ' + err.message);
-      }
+      } catch(err){ alert('Erro ao remover histórico: ' + err.message); }
     }
 
-    // Toggle history row visibility
     function toggleHistory(id, el){
       const row = document.getElementById(`histrow_${id}`);
       const arrow = document.getElementById(`arrow_${id}`);
       if(!row) return;
       if(row.style.display === 'none' || row.style.display === '') {
         row.style.display = 'table-row';
-        if(arrow) { arrow.classList.add('open'); arrow.textContent = '▼'; }
+        if(arrow){ arrow.classList.add('open'); arrow.textContent = '▼'; }
       } else {
         row.style.display = 'none';
-        if(arrow) { arrow.classList.remove('open'); arrow.textContent = '▶'; }
+        if(arrow){ arrow.classList.remove('open'); arrow.textContent = '▶'; }
       }
     }
 
-    // Status badge
+    // utility UI/text helpers
     function statusBadge(st){ if(st==='ok') return `<span class="badge ok">OK</span>`; return `<span class="badge missing">Precisa</span>` }
-
-    // format YYYY-MM-DD -> DD/MM/YYYY
     function formatDate(d){ if(!d) return '-'; const [y,m,day] = d.split('-'); return `${day}/${m}/${y}` }
-
     function escapeHtml(t){ return (t||'').toString().replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }
 
-    // compute next eval: add exactly 3 months (adjust for month lengths)
-    function computeNextEval(d){ // d is YYYY-MM-DD or null
+    // computeNextEval: add exactly 3 months with end-of-month adjustment
+    function computeNextEval(d){
       if(!d) return null;
       const [y,m,day] = d.split('-').map(Number);
       const dt = new Date(y, m-1, day);
-      const originalDay = dt.getDate();
+      const origDay = dt.getDate();
       dt.setMonth(dt.getMonth() + 3);
-      // if month rolled over (e.g., from 31 to shorter month), set to last day of prev month
-      if(dt.getDate() !== originalDay) dt.setDate(0);
+      if(dt.getDate() !== origDay) dt.setDate(0); // last day of previous month
       const yy = dt.getFullYear();
       const mm = String(dt.getMonth()+1).padStart(2,'0');
       const dd = String(dt.getDate()).padStart(2,'0');
       return `${yy}-${mm}-${dd}`;
     }
 
-    // CSV / JSON helpers
+    // CSV/JSON helpers
     function downloadCSV(arr){ if(!arr || arr.length===0){ alert('Nenhum registro para exportar'); return; }
       const headers = ['Nome','Telefone','ÚltimaAvaliação','PróximaAvaliação','Status'];
       const lines = [headers.join(',')].concat(arr.map(s => [csvSafe(s.name), csvSafe(s.phone), s.lastEval||'', s.nextEval||'', s.status||''].join(',')));
@@ -411,64 +374,50 @@
     function csvSafe(t){ if(t==null) return ''; return '"' + (''+t).replaceAll('"','""') + '"'; }
     function downloadJSON(arr){ const blob = new Blob([JSON.stringify(arr, null, 2)], {type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'alunos_pilates.json'; a.click(); URL.revokeObjectURL(url); }
 
-    // handle import (array or object)
+    // import handler (array or object)
     function handleImport(e){ const f = e.target.files[0]; if(!f) return; const reader = new FileReader(); reader.onload = async () => {
-      try{
+      try {
         const data = JSON.parse(reader.result);
         if(Array.isArray(data)){
-          if(!confirm('Importar e substituir os registros atuais? OK para substituir, Cancel para mesclar')) {
-            // merge
-            for(const s of data){
-              if(!s.id) s.id = cryptoRandomId();
-              await set(ref(db, `${ROOT}/${s.id}`), s);
-            }
-            alert('Importação (mescla) concluída');
-          } else {
-            // replace: build object keyed by id
+          if(confirm('Importar e substituir os registros atuais? OK para substituir, Cancel para mesclar')){
             const obj = {};
             data.forEach(s => { if(!s.id) s.id = cryptoRandomId(); obj[s.id] = s; });
             await set(ref(db, ROOT), obj);
-            alert('Importação (substituição) concluída');
+          } else {
+            for(const s of data){ if(!s.id) s.id = cryptoRandomId(); await set(ref(db, `${ROOT}/${s.id}`), s); }
           }
         } else if(typeof data === 'object'){
           if(confirm('Importar e substituir os registros atuais? OK para substituir, Cancel para mesclar')){
             await set(ref(db, ROOT), data);
-            alert('Importação (substituição) concluída');
           } else {
-            for(const k of Object.keys(data)){
-              await set(ref(db, `${ROOT}/${k}`), data[k]);
-            }
-            alert('Importação (mescla) concluída');
+            for(const k of Object.keys(data)){ await set(ref(db, `${ROOT}/${k}`), data[k]); }
           }
         } else alert('Formato inválido');
-      }catch(err){ alert('Erro ao ler o arquivo: ' + err.message); }
+        alert('Importação concluída');
+      } catch(err) { alert('Erro ao ler o arquivo: ' + err.message); }
       e.target.value = '';
     }; reader.readAsText(f); }
 
-    // triage: mark missing if nextEval passed or no eval
+    // quick triage: mark missing when nextEval passed or no eval
     function quickTriage(){
       const now = new Date();
       const updates = {};
       let changed = 0;
-      Object.values(students).forEach(s => {
-        const next = s && s.nextEval ? new Date(s.nextEval+'T00:00:00') : null;
+      Object.values(students || {}).forEach(s => {
+        const next = s && s.nextEval ? new Date(s.nextEval + 'T00:00:00') : null;
         if(!s.lastEval || (next && next < now)){
           if(s.status !== 'missing'){ updates[`${ROOT}/${s.id}/status`] = 'missing'; changed++; }
         }
       });
-      if(changed === 0) { alert('Nenhuma alteração feita pela triagem'); return; }
+      if(changed === 0){ alert('Nenhuma alteração feita pela triagem'); return; }
       update(ref(db), updates).then(()=> alert(`${changed} aluno(s) marcados como 'Precisa' pela triagem rápida`)).catch(err => alert('Erro ao aplicar triagem: ' + err.message));
     }
 
-    // expose internals for console debugging
-    window._students = students;
-    window._db = db;
-
-    // seed sample if DB empty and no local
+    // seed sample if DB empty (only if empty)
     (async function seedIfEmpty(){
       try {
-        // if both empty, seed
-        if(!Object.keys(students || {}).length){
+        const snap = await get(ref(db, ROOT));
+        if(!snap.exists()){
           const sample = {
             a1: { id:'a1', name:'Ana Monteiro', phone:'21987654321', lastEval:'2024-11-10', nextEval: computeNextEval('2024-11-10'), status:'missing', history:{} },
             b2: { id:'b2', name:'Carlos Silva', phone:'21999887766', lastEval:'2025-07-02', nextEval: computeNextEval('2025-07-02'), status:'ok', history:{} }
@@ -478,8 +427,8 @@
       } catch(e){ console.warn('seed failed', e); }
     })();
 
-    // ensure local saved on unload
-    window.addEventListener('beforeunload', () => saveLocal());
   </script>
 </body>
 </html>
+
+
